@@ -3,18 +3,29 @@ name: Counter tetap tersimpan setelah app ke background
 tags:
   - regression
 ---
+# Tiap `takeScreenshot` dilampirkan ke step sebelumnya di laporan Allure
+# (lihat .github/scripts/maestro_to_allure.py).
 - launchApp:
     clearState: true
+- takeScreenshot: 01_launch
 # Launch pertama setelah emulator boot (build debug) bisa lambat.
 - extendedWaitUntil:
     visible: "Flutter Demo Home Page"
     timeout: 60000
+- takeScreenshot: 02_halaman_utama
 - tapOn: "Increment"
+- takeScreenshot: 03_tap_1
 - tapOn: "Increment"
+- takeScreenshot: 04_tap_2
 - assertVisible: "2"
+- takeScreenshot: 05_counter_2
 # Kirim app ke background lalu buka lagi tanpa mematikan proses.
 - pressKey: Home
+- takeScreenshot: 06_home
 - assertNotVisible: "Flutter Demo Home Page"
+- takeScreenshot: 07_app_di_background
 - launchApp:
     stopApp: false
+- takeScreenshot: 08_app_dibuka_lagi
 - assertVisible: "2"
+- takeScreenshot: 09_counter_tetap_2
