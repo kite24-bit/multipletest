@@ -95,15 +95,20 @@ jobs:
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb install -r app-debug.apk
-            mkdir -p junit
-            maestro test ${{ matrix.flow.path }} --format junit --test-suite-name Maestro --output junit/${{ matrix.flow.name }}.xml --test-output-dir maestro-debug
+            maestro test ${{ matrix.flow.path }} --test-output-dir maestro-debug
 
-      # JUnit XML: bahan laporan Allure gabungan di job `allure-report`.
+      # Maestro tidak punya output Allure dan JUnit-nya tanpa step, jadi
+      # commands.json (detail per langkah + screenshot) dikonversi ke hasil Allure.
+      - name: Convert to Allure results
+        if: always()
+        run: python3 .github/scripts/maestro_to_allure.py maestro-debug allure-results
+
+      # Hasil Allure per flow: bahan laporan gabungan di job `allure-report`.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-junit-${{ matrix.flow.name }}
-          path: junit/
+          name: maestro-allure-${{ matrix.flow.name }}
+          path: allure-results/
           if-no-files-found: ignore
 
       # Screenshot + log per langkah untuk investigasi kalau flow gagal.
@@ -122,8 +127,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: maestro-junit-*
+          pattern: maestro-allure-*
           path: allure-results
+          # Nama file hasil Allure unik (UUID), jadi aman digabung ke satu folder.
+          merge-multiple: true
 
       - uses: actions/setup-java@v4
         with:
@@ -136,11 +143,11 @@ jobs:
           unzip -q "$RUNNER_TEMP/allure.zip" -d "$RUNNER_TEMP/allure"
           dirname "$(find "$RUNNER_TEMP/allure" -path '*/bin/allure' | head -1)" >> "$GITHUB_PATH"
 
-      # Tiap artifact jadi satu subfolder di allure-results/; Allure membaca
-      # semuanya dan menghasilkan satu index.html mandiri (--single-file).
+      # Semua hasil flow ada di allure-results/; Allure menggabungkannya jadi
+      # satu index.html mandiri (--single-file).
       - name: Generate Allure report
         run: |
-          allure generate --single-file --clean -o allure-report allure-results/*
+          allure generate --single-file --clean -o allure-report allure-results
           jq -r '"### Maestro: \(.stats.passed)/\(.stats.total) passed, \(.stats.failed) failed, \(.stats.broken) broken\n\nDownload artifact **allure-report-maestro** lalu buka `index.html`."' allure-report/summary.json >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

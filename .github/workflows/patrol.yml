@@ -82,7 +82,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: patrol-junit-${{ matrix.test.name }}
-          path: build/app/outputs/androidTest-results/connected/**/TEST-*.xml
+          # Tanpa `**`: XML harus berada di level teratas artifact, karena
+          # Allure hanya membaca file langsung di dalam folder hasil.
+          path: build/app/outputs/androidTest-results/connected/debug/TEST-*.xml
           if-no-files-found: ignore
 
       # Laporan HTML Gradle + logcat per test untuk investigasi kalau gagal.
