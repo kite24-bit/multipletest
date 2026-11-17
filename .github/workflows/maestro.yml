@@ -92,12 +92,44 @@ jobs:
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb install -r app-debug.apk
-            maestro test ${{ matrix.flow.path }} --format junit --output report-${{ matrix.flow.name }}.xml --test-output-dir maestro-output
+            mkdir -p junit
+            maestro test ${{ matrix.flow.path }} --format junit --test-suite-name Maestro --output junit/maestro-${{ matrix.flow.name }}.xml --test-output-dir maestro-output
 
+      # JUnit XML: dikumpulkan oleh job `report` di bawah.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-${{ matrix.flow.name }}
-          path: |
-            report-${{ matrix.flow.name }}.xml
-            maestro-output/
+          name: maestro-junit-${{ matrix.flow.name }}
+          path: junit/
+          if-no-files-found: ignore
+
+      # Screenshot + log Maestro untuk investigasi kalau flow gagal.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-debug-${{ matrix.flow.name }}
+          path: maestro-output/
+          if-no-files-found: ignore
+
+  # 3. Gabungkan hasil semua flow jadi satu laporan yang tampil di UI GitHub:
+  #    ringkasan di halaman run, check run + anotasi, dan komentar di PR.
+  report:
+    needs: maestro
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maestro-junit-*
+          path: junit
+          merge-multiple: true
+
+      - uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          check_name: Maestro E2E results
+          files: junit/**/*.xml
