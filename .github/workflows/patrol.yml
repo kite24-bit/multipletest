@@ -9,6 +9,7 @@ on:
 env:
   PATROL_CLI_VERSION: 4.9.0
   PATROL_ANALYTICS_ENABLED: "false"
+  ALLURE_VERSION: 2.46.2
 
 jobs:
   # 1. Daftar semua file test di patrol_test/ untuk matrix, jadi file test
@@ -76,10 +77,54 @@ jobs:
             adb shell settings put global hide_error_dialogs 1
             patrol test --target ${{ matrix.test.path }}
 
-      # Laporan HTML bawaan `patrol test` (dari Gradle): buka index.html.
+      # JUnit XML dari Gradle: bahan laporan Allure gabungan di job `allure-report`.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: patrol-report-${{ matrix.test.name }}
-          path: build/app/reports/androidTests/connected/debug/
+          name: patrol-junit-${{ matrix.test.name }}
+          path: build/app/outputs/androidTest-results/connected/**/TEST-*.xml
           if-no-files-found: ignore
+
+      # Laporan HTML Gradle + logcat per test untuk investigasi kalau gagal.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patrol-debug-${{ matrix.test.name }}
+          path: |
+            build/app/reports/androidTests/connected/debug/
+            build/app/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
+
+  # 3. Gabungkan hasil SEMUA file test jadi SATU laporan Allure.
+  allure-report:
+    needs: patrol
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: patrol-junit-*
+          path: allure-results
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Allure
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/allure.zip" "https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.zip"
+          unzip -q "$RUNNER_TEMP/allure.zip" -d "$RUNNER_TEMP/allure"
+          dirname "$(find "$RUNNER_TEMP/allure" -path '*/bin/allure' | head -1)" >> "$GITHUB_PATH"
+
+      # Tiap artifact jadi satu subfolder di allure-results/; Allure membaca
+      # semuanya dan menghasilkan satu index.html mandiri (--single-file).
+      - name: Generate Allure report
+        run: |
+          allure generate --single-file --clean -o allure-report allure-results/*
+          jq -r '"### Patrol: \(.stats.passed)/\(.stats.total) passed, \(.stats.failed) failed, \(.stats.broken) broken\n\nDownload artifact **allure-report-patrol** lalu buka `index.html`."' allure-report/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-patrol
+          path: allure-report/
