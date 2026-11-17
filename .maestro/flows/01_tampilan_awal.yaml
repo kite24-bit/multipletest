@@ -1,0 +1,11 @@
+appId: com.example.testflutter
+name: Tampilan awal menampilkan judul dan counter 0
+tags:
+  - smoke
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Flutter Demo Home Page"
+- assertVisible: "You have pushed the button this many times:"
+- assertVisible: "0"
+- assertVisible: "Increment"

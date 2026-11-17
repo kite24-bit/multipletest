@@ -1,0 +1,6 @@
+# Konfigurasi workspace Maestro.
+# `maestro test .maestro` menjalankan semua flow di bawah ini.
+# Saat sharding, urutan flow tidak dijamin, jadi tiap flow harus mandiri
+# (masing-masing mulai dengan `launchApp: clearState: true`).
+flows:
+  - "flows/*"
