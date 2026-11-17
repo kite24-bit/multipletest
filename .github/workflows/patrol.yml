@@ -76,42 +76,10 @@ jobs:
             adb shell settings put global hide_error_dialogs 1
             patrol test --target ${{ matrix.test.path }}
 
-      # JUnit XML dari Gradle: dikumpulkan oleh job `report` di bawah.
+      # Laporan HTML bawaan `patrol test` (dari Gradle): buka index.html.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: patrol-junit-${{ matrix.test.name }}
-          path: build/app/outputs/androidTest-results/connected/**/TEST-*.xml
+          name: patrol-report-${{ matrix.test.name }}
+          path: build/app/reports/androidTests/connected/debug/
           if-no-files-found: ignore
-
-      # Laporan HTML Gradle + logcat per test untuk investigasi kalau gagal.
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: patrol-debug-${{ matrix.test.name }}
-          path: |
-            build/app/reports/androidTests/connected/
-            build/app/outputs/androidTest-results/connected/
-          if-no-files-found: ignore
-
-  # 3. Gabungkan hasil semua file test jadi satu laporan yang tampil di UI
-  #    GitHub: ringkasan di halaman run, check run + anotasi, dan komentar di PR.
-  report:
-    needs: patrol
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: patrol-junit-*
-          path: junit
-
-      - uses: EnricoMi/publish-unit-test-result-action@v2
-        with:
-          check_name: Patrol E2E results
-          files: junit/**/*.xml
