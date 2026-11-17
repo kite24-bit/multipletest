@@ -37,7 +37,7 @@ jobs:
 
       - id: flows
         run: |
-          list=$(ls .maestro/flows/*.yaml | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: (split("/")[-1] | rtrimstr(".yaml")), path: .})')
+          list=$(find .maestro/flows -name '*.yaml' | sort | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: (split("/")[-1] | rtrimstr(".yaml")), path: .})')
           echo "list=$list" >> "$GITHUB_OUTPUT"
 
   # 2. Satu job per flow, semuanya jalan paralel, masing-masing dengan
