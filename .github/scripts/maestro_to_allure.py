@@ -102,6 +102,18 @@ def convert_flow(flow_dir, results_dir):
         if kind in HIDDEN and status != "failed":
             continue
 
+        # `- takeScreenshot: nama` di flow: tempel gambarnya ke step sebelumnya
+        # (level yang sama) dan jangan tampilkan sebagai step tersendiri.
+        if kind == "takeScreenshotCommand" and status != "failed":
+            depth = meta.get("depth", 0)
+            while stack and stack[-1][0] > depth:
+                stack.pop()
+            path = cmd.get("path", "")
+            png = os.path.join(flow_dir, "takeScreenshot", path if path.endswith(".png") else f"{path}.png")
+            if stack and os.path.isfile(png):
+                stack[-1][1]["attachments"].append(attach(results_dir, png, os.path.basename(png), "image/png"))
+                continue
+
         ts = meta.get("timestamp")
         dur = meta.get("duration") or 0
         if ts is not None:

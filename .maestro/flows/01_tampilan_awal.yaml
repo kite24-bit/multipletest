@@ -3,12 +3,19 @@ name: Tampilan awal menampilkan judul dan counter 0
 tags:
   - smoke
 ---
+# Tiap `takeScreenshot` dilampirkan ke step sebelumnya di laporan Allure
+# (lihat .github/scripts/maestro_to_allure.py).
 - launchApp:
     clearState: true
+- takeScreenshot: 01_launch
 # Launch pertama setelah emulator boot (build debug) bisa lambat.
 - extendedWaitUntil:
     visible: "Flutter Demo Home Page"
     timeout: 60000
+- takeScreenshot: 02_halaman_utama
 - assertVisible: "You have pushed the button this many times:"
+- takeScreenshot: 03_label_counter
 - assertVisible: "0"
+- takeScreenshot: 04_counter_0
 - assertVisible: "Increment"
+- takeScreenshot: 05_tombol_increment

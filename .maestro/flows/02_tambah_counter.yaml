@@ -3,17 +3,26 @@ name: Tombol + menambah counter
 tags:
   - regression
 ---
+# Tiap `takeScreenshot` dilampirkan ke step sebelumnya di laporan Allure
+# (lihat .github/scripts/maestro_to_allure.py).
 - launchApp:
     clearState: true
+- takeScreenshot: 01_launch
 # Launch pertama setelah emulator boot (build debug) bisa lambat.
 - extendedWaitUntil:
     visible: "Flutter Demo Home Page"
     timeout: 60000
+- takeScreenshot: 02_halaman_utama
 - assertVisible: "0"
+- takeScreenshot: 03_counter_0
 - tapOn: "Increment"
+- takeScreenshot: 04_tap_increment
 - assertVisible: "1"
+- takeScreenshot: 05_counter_1
 - repeat:
     times: 4
     commands:
       - tapOn: "Increment"
+- takeScreenshot: 06_setelah_tap_4x
 - assertVisible: "5"
+- takeScreenshot: 07_counter_5
