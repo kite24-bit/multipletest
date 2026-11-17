@@ -1,0 +1,16 @@
+appId: com.example.testflutter
+name: Counter tetap tersimpan setelah app ke background
+tags:
+  - regression
+---
+- launchApp:
+    clearState: true
+- tapOn: "Increment"
+- tapOn: "Increment"
+- assertVisible: "2"
+# Kirim app ke background lalu buka lagi tanpa mematikan proses.
+- pressKey: Home
+- assertNotVisible: "Flutter Demo Home Page"
+- launchApp:
+    stopApp: false
+- assertVisible: "2"

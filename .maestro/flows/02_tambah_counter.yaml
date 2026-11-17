@@ -1,0 +1,15 @@
+appId: com.example.testflutter
+name: Tombol + menambah counter
+tags:
+  - regression
+---
+- launchApp:
+    clearState: true
+- assertVisible: "0"
+- tapOn: "Increment"
+- assertVisible: "1"
+- repeat:
+    times: 4
+    commands:
+      - tapOn: "Increment"
+- assertVisible: "5"
