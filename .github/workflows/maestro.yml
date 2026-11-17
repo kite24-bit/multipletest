@@ -6,6 +6,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  ALLURE_VERSION: 2.46.2
+
 jobs:
   # 1. Build APK sekali, dipakai ulang oleh semua job test.
   #    Sekalian membuat daftar flow untuk matrix, jadi flow baru di
@@ -92,12 +95,55 @@ jobs:
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb install -r app-debug.apk
-            maestro test ${{ matrix.flow.path }} --format junit --output report-${{ matrix.flow.name }}.xml --test-output-dir maestro-output
+            mkdir -p junit
+            maestro test ${{ matrix.flow.path }} --format junit --test-suite-name Maestro --output junit/${{ matrix.flow.name }}.xml --test-output-dir maestro-debug
 
+      # JUnit XML: bahan laporan Allure gabungan di job `allure-report`.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-${{ matrix.flow.name }}
-          path: |
-            report-${{ matrix.flow.name }}.xml
-            maestro-output/
+          name: maestro-junit-${{ matrix.flow.name }}
+          path: junit/
+          if-no-files-found: ignore
+
+      # Screenshot + log per langkah untuk investigasi kalau flow gagal.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-debug-${{ matrix.flow.name }}
+          path: maestro-debug/
+          if-no-files-found: ignore
+
+  # 3. Gabungkan hasil SEMUA flow jadi SATU laporan Allure.
+  allure-report:
+    needs: maestro
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maestro-junit-*
+          path: allure-results
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Allure
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/allure.zip" "https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.zip"
+          unzip -q "$RUNNER_TEMP/allure.zip" -d "$RUNNER_TEMP/allure"
+          dirname "$(find "$RUNNER_TEMP/allure" -path '*/bin/allure' | head -1)" >> "$GITHUB_PATH"
+
+      # Tiap artifact jadi satu subfolder di allure-results/; Allure membaca
+      # semuanya dan menghasilkan satu index.html mandiri (--single-file).
+      - name: Generate Allure report
+        run: |
+          allure generate --single-file --clean -o allure-report allure-results/*
+          jq -r '"### Maestro: \(.stats.passed)/\(.stats.total) passed, \(.stats.failed) failed, \(.stats.broken) broken\n\nDownload artifact **allure-report-maestro** lalu buka `index.html`."' allure-report/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-maestro
+          path: allure-report/

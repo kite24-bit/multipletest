@@ -5,7 +5,10 @@ tags:
 ---
 - launchApp:
     clearState: true
-- assertVisible: "Flutter Demo Home Page"
+# Launch pertama setelah emulator boot (build debug) bisa lambat.
+- extendedWaitUntil:
+    visible: "Flutter Demo Home Page"
+    timeout: 60000
 - assertVisible: "You have pushed the button this many times:"
 - assertVisible: "0"
 - assertVisible: "Increment"
