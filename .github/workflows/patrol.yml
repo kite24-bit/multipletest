@@ -11,10 +11,32 @@ env:
   PATROL_ANALYTICS_ENABLED: "false"
 
 jobs:
-  # 1. Build APK app + APK test (instrumentation) sekali dengan Patrol CLI.
-  #    Semua file *_test.dart di patrol_test/ ikut di-bundle otomatis.
-  build:
+  # 1. Daftar semua file test di patrol_test/ untuk matrix, jadi file test
+  #    baru otomatis ikut jalan tanpa mengubah workflow ini.
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.tests.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tests
+        run: |
+          list=$(find patrol_test -name '*_test.dart' ! -name 'test_bundle.dart' | sort | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: (ltrimstr("patrol_test/") | rtrimstr(".dart") | gsub("/"; "-")), path: .})')
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  # 2. Satu job per file test, semuanya jalan paralel, masing-masing dengan
+  #    emulator headless sendiri. `patrol test` memakai Android Test
+  #    Orchestrator, jadi tiap test case jalan di proses app yang bersih.
+  patrol:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.discover.outputs.tests) }}
+    name: patrol (${{ matrix.test.name }})
     steps:
       - uses: actions/checkout@v4
 
@@ -34,32 +56,6 @@ jobs:
           dart pub global activate patrol_cli "$PATROL_CLI_VERSION"
           echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
 
-      - run: patrol build android --debug
-
-      # Isi artifact: debug/app-debug.apk dan androidTest/debug/app-debug-androidTest.apk
-      - uses: actions/upload-artifact@v4
-        with:
-          name: patrol-apks
-          path: build/app/outputs/apk/
-
-  # 2. Test case dibagi ke beberapa job paralel (shard), masing-masing dengan
-  #    emulator headless sendiri. Tiap test case hanya jalan di satu shard.
-  #    Untuk menambah paralelisme cukup tambah angka di `shard`.
-  patrol:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1]
-    name: patrol (shard ${{ matrix.shard }})
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: patrol-apks
-          path: apk
-
       # Wajib agar emulator x86_64 bisa pakai akselerasi hardware di runner Linux.
       - name: Enable KVM
         run: |
@@ -67,9 +63,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # `am instrument` selalu exit 0, jadi lulus/gagal dicek dari baris "OK (".
-      # numShards/shardIndex diambil dari matrix, jadi otomatis ikut jumlah shard.
-      - name: Run Patrol tests
+      - name: Run Patrol test
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -80,13 +74,11 @@ jobs:
           # Tiap baris dijalankan terpisah, jadi tulis satu perintah per baris.
           script: |
             adb shell settings put global hide_error_dialogs 1
-            adb install -r -t apk/debug/app-debug.apk
-            adb install -r -t apk/androidTest/debug/app-debug-androidTest.apk
-            adb shell am instrument -w -r -e numShards ${{ strategy.job-total }} -e shardIndex ${{ strategy.job-index }} com.example.testflutter.test/pl.leancode.patrol.PatrolJUnitRunner | tee instrument.log
-            grep -q "^OK (" instrument.log
+            patrol test --target ${{ matrix.test.path }}
 
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: patrol-shard-${{ matrix.shard }}
-          path: instrument.log
+          name: patrol-${{ matrix.test.name }}
+          path: build/app/reports/androidTests/connected/
+          if-no-files-found: ignore
