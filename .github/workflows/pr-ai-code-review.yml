@@ -7,7 +7,7 @@ on:
   pull_request:
   # Wajib ada: Maestro hanya jalan setelah review untuk push ke uat lolos.
   push:
-    branches: [uat]
+    branches: [main]
 
 jobs:
   review:
