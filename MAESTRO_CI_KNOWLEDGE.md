@@ -277,10 +277,12 @@ jobs:
           arch: x86_64
           disable-animations: true
           # Tiap baris dijalankan terpisah, jadi tulis satu perintah per baris.
+          # --config wajib: Maestro hanya mencari config.yaml otomatis kalau
+          # yang dikirim folder, bukan daftar file flow.
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb install -r app-debug.apk
-            maestro test ${{ matrix.shard.flows }} --test-output-dir maestro-debug
+            maestro test ${{ matrix.shard.flows }} --config .maestro/config.yaml --test-output-dir maestro-debug
 
       # Maestro tidak punya output Allure dan JUnit-nya tanpa step, jadi
       # commands.json (detail per langkah + screenshot) dikonversi ke hasil Allure.
@@ -346,6 +348,11 @@ jobs:
 
 ### Catatan penting workflow
 
+- **Cara kerja sharding Maestro** (dicek dari source `TestCommand.kt`): `--shard-split N` membagi flow round-robin (`index % N`) ke N device yang terhubung ke **satu proses Maestro**; kalau device kurang, Maestro error "Not enough devices connected". `--shard-all N` menjalankan **semua** flow di setiap device (bukan untuk mempercepat). Karena satu job GitHub cuma punya satu emulator, pembagian round-robin yang sama dilakukan di job `build` (jq) dan tiap shard jadi satu job matrix.
+- Kalau `maestro test` diberi **daftar file** (bukan folder), `config.yaml` **tidak** dicari otomatis. Karena itu workflow memakai `--config .maestro/config.yaml`. Pola `flows:` di config hanya berlaku untuk folder, jadi file yang dikirim eksplisit tetap jalan.
+- Filter tag (`--include-tags`/`--exclude-tags`, atau `includeTags`/`excludeTags` di config) membuat flow yang tersaring tidak menghasilkan output, sehingga converter mencatatnya sebagai **broken**. Kalau butuh filter tag di CI, filter juga daftar flow di job `build`.
+- `executionOrder` (flow berurutan) di config **tidak bisa** digabung dengan sharding.
+- Nama file flow jangan mengandung spasi, karena daftar flow per shard dipisah dengan spasi.
 - **`workflow_run` hanya aktif kalau `maestro.yml` sudah ada di default branch (`main`).** Push ke branch lain tidak memicunya sebelum file ini di-merge ke `main`.
 - `workflows: [PR AI Code Review]` harus **sama persis** dengan `name:` workflow review di project, bukan nama filenya.
 - Workflow review di project **wajib punya trigger `push: branches: [uat]`**. Kalau review hanya jalan di `pull_request`, Maestro tidak akan pernah jalan.

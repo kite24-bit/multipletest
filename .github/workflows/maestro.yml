@@ -128,10 +128,12 @@ jobs:
           arch: x86_64
           disable-animations: true
           # Tiap baris dijalankan terpisah, jadi tulis satu perintah per baris.
+          # --config wajib: Maestro hanya mencari config.yaml otomatis kalau
+          # yang dikirim folder, bukan daftar file flow.
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb install -r app-debug.apk
-            maestro test ${{ matrix.shard.flows }} --test-output-dir maestro-debug
+            maestro test ${{ matrix.shard.flows }} --config .maestro/config.yaml --test-output-dir maestro-debug
 
       # Maestro tidak punya output Allure dan JUnit-nya tanpa step, jadi
       # commands.json (detail per langkah + screenshot) dikonversi ke hasil Allure.
