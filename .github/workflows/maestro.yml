@@ -26,6 +26,15 @@ env:
   # boot emulator + install Maestro cuma sekali per shard, bukan per flow.
   SHARDS: 2
   MAESTRO_CLI_NO_ANALYTICS: 1
+  # Versi Maestro dipin (dibaca installer) sekaligus jadi key cache.
+  MAESTRO_VERSION: 2.12.1
+  # Konfigurasi emulator; juga jadi key cache snapshot AVD.
+  EMULATOR_API: 34
+  # google_apis = tanpa Play Store, jadi tidak ada dialog
+  # "Google Play Store keeps stopping" yang bikin flow gagal palsu.
+  EMULATOR_TARGET: google_apis
+  EMULATOR_ARCH: x86_64
+  EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
 
 jobs:
   # 1. Build APK sekali, dipakai ulang oleh semua job test.
@@ -97,15 +106,37 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # Cache instalasi Maestro: download hanya kalau versi ini belum ada di
+      # cache. Pakai restore/save terpisah (bukan actions/cache) supaya cache
+      # tetap tersimpan walaupun ada flow yang gagal.
+      - name: Restore Maestro cache
+        id: maestro-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.maestro
+          key: maestro-${{ env.MAESTRO_VERSION }}
+
       # Download installer kadang putus (connection reset) tapi installer
       # tidak gagal, jadi coba ulang sampai `maestro --version` berhasil.
       - name: Install Maestro
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
         run: |
           for i in 1 2 3; do
             curl -fsSL "https://get.maestro.mobile.dev" | bash && "$HOME/.maestro/bin/maestro" --version && break
             echo "Install Maestro gagal (percobaan $i), coba lagi..."
             sleep 10
           done
+          "$HOME/.maestro/bin/maestro" --version
+
+      - name: Save Maestro cache
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.maestro
+          key: maestro-${{ env.MAESTRO_VERSION }}
+
+      - name: Add Maestro to PATH
+        run: |
           "$HOME/.maestro/bin/maestro" --version
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
@@ -116,16 +147,51 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # Menyalakan emulator headless (-no-window), menunggu boot selesai,
+      # Cache snapshot emulator (pola dari README android-emulator-runner):
+      # dengan snapshot, emulator langsung resume tanpa cold boot.
+      - name: Restore AVD cache
+        id: avd-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.EMULATOR_API }}-${{ env.EMULATOR_TARGET }}-${{ env.EMULATOR_ARCH }}
+
+      # Hanya saat cache kosong (run pertama / konfigurasi emulator berubah):
+      # boot sekali lalu simpan snapshot-nya.
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.EMULATOR_API }}
+          target: ${{ env.EMULATOR_TARGET }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          force-avd-creation: false
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
+          disable-animations: false
+          script: echo "Snapshot AVD dibuat untuk cache."
+
+      - name: Save AVD cache
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.EMULATOR_API }}-${{ env.EMULATOR_TARGET }}-${{ env.EMULATOR_ARCH }}
+
+      # Menyalakan emulator headless dari snapshot, menunggu boot selesai,
       # mematikan animasi, menjalankan `script`, lalu mematikan emulator.
+      # -no-snapshot-save: snapshot di cache tetap bersih untuk run berikutnya.
       - name: Run Maestro flow
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
-          # google_apis = tanpa Play Store, jadi tidak ada dialog
-          # "Google Play Store keeps stopping" yang bikin flow gagal palsu.
-          target: google_apis
-          arch: x86_64
+          api-level: ${{ env.EMULATOR_API }}
+          target: ${{ env.EMULATOR_TARGET }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save ${{ env.EMULATOR_OPTIONS }}
           disable-animations: true
           # Tiap baris dijalankan terpisah, jadi tulis satu perintah per baris.
           # --config wajib: Maestro hanya mencari config.yaml otomatis kalau

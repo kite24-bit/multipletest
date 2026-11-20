@@ -32,7 +32,7 @@
 
 | Komponen | Pilihan | Alasan |
 |---|---|---|
-| E2E framework | **Maestro** (versi CLI terbaru, terakhir diuji 2.12.1) | Flow berupa YAML sederhana, satu file per test case, black-box (APK biasa tanpa instrumentasi), dan mudah diparalelkan. |
+| E2E framework | **Maestro**, versi dipin lewat env `MAESTRO_VERSION` (saat ini 2.12.1) | Flow berupa YAML sederhana, satu file per test case, black-box (APK biasa tanpa instrumentasi), dan mudah diparalelkan. |
 | Emulator di CI | `reactivecircus/android-emulator-runner@v2`, `api-level: 34`, `target: google_apis`, `arch: x86_64` | Emulator berjalan headless otomatis. `google_apis` (tanpa Play Store) menghindari dialog "Google Play Store keeps stopping". |
 | Paralel di CI | **Matrix per shard** (`SHARDS` di `env`, default 2). Flow dibagi round-robin ke shard; tiap shard = 1 job + 1 emulator, flow di dalamnya jalan berurutan (`maestro test a.yaml b.yaml`). | Boot emulator + install Maestro (±2–3 menit) cuma sekali per shard, bukan per flow. `--shard-split` bawaan Maestro butuh banyak device di **satu mesin**, sedangkan runner GitHub (emulator-runner) cuma 1 emulator per job, jadi sharding dilakukan lewat matrix. Daftar flow dibuat otomatis dengan `find`. |
 | Paralel di lokal | `maestro --device a,b test .maestro --shard-split 2` | Satu perintah untuk banyak emulator di satu mesin. |
@@ -175,6 +175,15 @@ env:
   # boot emulator + install Maestro cuma sekali per shard, bukan per flow.
   SHARDS: 2
   MAESTRO_CLI_NO_ANALYTICS: 1
+  # Versi Maestro dipin (dibaca installer) sekaligus jadi key cache.
+  MAESTRO_VERSION: 2.12.1
+  # Konfigurasi emulator; juga jadi key cache snapshot AVD.
+  EMULATOR_API: 34
+  # google_apis = tanpa Play Store, jadi tidak ada dialog
+  # "Google Play Store keeps stopping" yang bikin flow gagal palsu.
+  EMULATOR_TARGET: google_apis
+  EMULATOR_ARCH: x86_64
+  EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
 
 jobs:
   # 1. Build APK sekali, dipakai ulang oleh semua job test.
@@ -246,15 +255,37 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # Cache instalasi Maestro: download hanya kalau versi ini belum ada di
+      # cache. Pakai restore/save terpisah (bukan actions/cache) supaya cache
+      # tetap tersimpan walaupun ada flow yang gagal.
+      - name: Restore Maestro cache
+        id: maestro-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.maestro
+          key: maestro-${{ env.MAESTRO_VERSION }}
+
       # Download installer kadang putus (connection reset) tapi installer
       # tidak gagal, jadi coba ulang sampai `maestro --version` berhasil.
       - name: Install Maestro
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
         run: |
           for i in 1 2 3; do
             curl -fsSL "https://get.maestro.mobile.dev" | bash && "$HOME/.maestro/bin/maestro" --version && break
             echo "Install Maestro gagal (percobaan $i), coba lagi..."
             sleep 10
           done
+          "$HOME/.maestro/bin/maestro" --version
+
+      - name: Save Maestro cache
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.maestro
+          key: maestro-${{ env.MAESTRO_VERSION }}
+
+      - name: Add Maestro to PATH
+        run: |
           "$HOME/.maestro/bin/maestro" --version
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
@@ -265,16 +296,51 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # Menyalakan emulator headless (-no-window), menunggu boot selesai,
+      # Cache snapshot emulator (pola dari README android-emulator-runner):
+      # dengan snapshot, emulator langsung resume tanpa cold boot.
+      - name: Restore AVD cache
+        id: avd-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.EMULATOR_API }}-${{ env.EMULATOR_TARGET }}-${{ env.EMULATOR_ARCH }}
+
+      # Hanya saat cache kosong (run pertama / konfigurasi emulator berubah):
+      # boot sekali lalu simpan snapshot-nya.
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.EMULATOR_API }}
+          target: ${{ env.EMULATOR_TARGET }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          force-avd-creation: false
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
+          disable-animations: false
+          script: echo "Snapshot AVD dibuat untuk cache."
+
+      - name: Save AVD cache
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.EMULATOR_API }}-${{ env.EMULATOR_TARGET }}-${{ env.EMULATOR_ARCH }}
+
+      # Menyalakan emulator headless dari snapshot, menunggu boot selesai,
       # mematikan animasi, menjalankan `script`, lalu mematikan emulator.
+      # -no-snapshot-save: snapshot di cache tetap bersih untuk run berikutnya.
       - name: Run Maestro flow
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
-          # google_apis = tanpa Play Store, jadi tidak ada dialog
-          # "Google Play Store keeps stopping" yang bikin flow gagal palsu.
-          target: google_apis
-          arch: x86_64
+          api-level: ${{ env.EMULATOR_API }}
+          target: ${{ env.EMULATOR_TARGET }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save ${{ env.EMULATOR_OPTIONS }}
           disable-animations: true
           # Tiap baris dijalankan terpisah, jadi tulis satu perintah per baris.
           # --config wajib: Maestro hanya mencari config.yaml otomatis kalau
@@ -348,6 +414,10 @@ jobs:
 
 ### Catatan penting workflow
 
+- **Cache** (hemat waktu per shard): `~/.maestro` di-cache dengan key `maestro-<MAESTRO_VERSION>` (versi dipin lewat env `MAESTRO_VERSION`, yang dibaca installer resmi). Snapshot emulator (`~/.android/avd/*`, `~/.android/adb*`) di-cache dengan key `avd-<api>-<target>-<arch>`, mengikuti pola README `android-emulator-runner`: kalau cache kosong, step `Create AVD snapshot` boot sekali tanpa `-no-snapshot` lalu disimpan; step test memakai `force-avd-creation: false` + `-no-snapshot-save` supaya snapshot di cache tetap bersih.
+- Pakai `actions/cache/restore` + `actions/cache/save` terpisah, **bukan** `actions/cache`. `actions/cache` hanya menyimpan cache kalau job sukses, jadi kalau ada flow gagal di run pertama, cache tidak pernah tersimpan.
+- Run pertama (atau setelah `MAESTRO_VERSION`/konfigurasi emulator diubah) lebih lama karena membuat cache. Kalau beberapa shard menyimpan key yang sama bersamaan, yang kalah hanya dapat warning "Unable to reserve cache" (tidak gagal).
+- Upgrade Maestro = ubah `MAESTRO_VERSION` (pastikan release `cli-<versi>` ada di GitHub mobile-dev-inc/maestro).
 - **Cara kerja sharding Maestro** (dicek dari source `TestCommand.kt`): `--shard-split N` membagi flow round-robin (`index % N`) ke N device yang terhubung ke **satu proses Maestro**; kalau device kurang, Maestro error "Not enough devices connected". `--shard-all N` menjalankan **semua** flow di setiap device (bukan untuk mempercepat). Karena satu job GitHub cuma punya satu emulator, pembagian round-robin yang sama dilakukan di job `build` (jq) dan tiap shard jadi satu job matrix.
 - Kalau `maestro test` diberi **daftar file** (bukan folder), `config.yaml` **tidak** dicari otomatis. Karena itu workflow memakai `--config .maestro/config.yaml`. Pola `flows:` di config hanya berlaku untuk folder, jadi file yang dikirim eksplisit tetap jalan.
 - Filter tag (`--include-tags`/`--exclude-tags`, atau `includeTags`/`excludeTags` di config) membuat flow yang tersaring tidak menghasilkan output, sehingga converter mencatatnya sebagai **broken**. Kalau butuh filter tag di CI, filter juga daftar flow di job `build`.
