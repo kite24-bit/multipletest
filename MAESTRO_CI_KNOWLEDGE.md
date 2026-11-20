@@ -438,6 +438,45 @@ jobs:
 - Allure tidak punya setup action resmi. Install dari zip Maven Central (butuh Java), lalu cari folder `bin` secara dinamis.
 - Job Summary menampilkan baris ringkasan seperti `Maestro: 3/3 passed, ...`. Report lengkap ada di artifact `allure-report-maestro`; unduh lalu buka `index.html`. Report bisa dibuka offline karena dibuat dengan `--single-file`.
 
+### Menentukan jumlah `SHARDS`
+
+Jumlah shard ditentukan oleh **jumlah flow dan total durasinya**, bukan besar aplikasinya.
+
+```
+waktu tunggu ≈ overhead per shard + (total durasi semua flow ÷ SHARDS)
+menit runner ≈ SHARDS × overhead + total durasi semua flow
+```
+
+- Overhead per shard (setup job, download APK, Maestro, menyalakan emulator) kira-kira 1–2 menit. Dengan cache snapshot mungkin lebih kecil, tapi belum terukur.
+- Menambah shard mempercepat hasil, tapi menambah menit runner karena overhead ikut dikali. Makin banyak shard, makin kecil tambahan cepatnya.
+- Cara memilih: tentukan target waktu tunggu (misalnya 10–15 menit), lalu `SHARDS ≈ total durasi flow ÷ target`. Setelah beberapa run, sesuaikan berdasarkan durasi asli tiap flow di Allure.
+- Batas paralel GitHub dihitung untuk semua workflow di organisasi (Free 20 job, Team 60, Enterprise jauh lebih banyak). Jangan pasang shard sampai menghabiskan jatah job lain.
+- Kalau repo-nya private, setiap shard tambahan menambah biaya overhead per run.
+
+**Rekomendasi untuk project nyata (perkiraan 20–30 flow, termasuk edge case):** mulai dengan `SHARDS: 4`, lalu naikkan ke 5 kalau sudah mendekati 30 flow. Asumsinya flow utama sekitar 2 menit, edge case lebih pendek, rata-rata sekitar 1,5 menit, dan overhead sekitar 1,5 menit.
+
+| Jumlah flow | Total durasi flow | SHARDS | Flow per shard | Waktu tunggu kira-kira | Menit runner |
+|---|---|---|---|---|---|
+| 20 | ~30 menit | 3 | 6–7 | ~12 menit | ~35 |
+| 20 | ~30 menit | **4** | 5 | **~9 menit** | ~36 |
+| 30 | ~45 menit | **4** | 7–8 | **~13 menit** | ~51 |
+| 30 | ~45 menit | 5 | 6 | ~10,5 menit | ~52 |
+| 30 | ~45 menit | 6 | 5 | ~9 menit | ~54 |
+
+**Jangan pakai "satu shard = satu fitur".** Jumlah flow tiap fitur tidak sama (misalnya login punya 8 edge case, profil cuma 2), jadi shard fitur terbesar yang menentukan lamanya workflow. Pembagian bergiliran berdasarkan nama file yang diurutkan justru otomatis menyebar flow dari fitur yang sama ke shard berbeda, asalkan file dinamai per fitur:
+
+```
+01_login_sukses.yaml            → shard-1
+02_login_password_salah.yaml    → shard-2
+03_login_akun_terkunci.yaml     → shard-3
+04_login_tanpa_internet.yaml    → shard-4
+05_bayar_tagihan_sukses.yaml    → shard-1
+```
+
+Flow panjang dan edge case pendek jadi tercampur rata. Di Allure, pengelompokan per fitur tetap terbaca dari nama file (`subSuite`).
+
+**Kelemahan yang diketahui:** pembagian berdasarkan **jumlah** flow, bukan durasi. Kalau ada beberapa flow yang jauh lebih lama, atur nomor urutnya supaya terbagi ke shard berbeda. Pembagian berdasarkan durasi (dari hasil run sebelumnya) bisa dibuat, tapi lebih rumit dan baru perlu kalau ketidakseimbangannya memang terasa.
+
 ---
 
 ## 6. Converter `.github/scripts/maestro_to_allure.py`
@@ -814,7 +853,7 @@ Saat menerapkan ke proyek nyata, sesuaikan hal-hal berikut. Cek repo dulu dan ta
 - [ ] Teks selector disesuaikan dengan UI nyata. Kalau aplikasi multi-bahasa, pertimbangkan `Semantics(identifier:)` + `id:` agar tidak bergantung teks.
 - [ ] Ganti teks di `extendedWaitUntil` dengan elemen yang pasti muncul di layar pertama (splash/login/home).
 - [ ] Flow yang butuh login: buat sub-flow `.maestro/subflows/login.yaml` lalu panggil dengan `runFlow`. Jangan masukkan subflow ke `flows/*` supaya tidak ikut matrix.
-- [ ] Atur `SHARDS` sesuai jumlah flow dan durasinya (lebih banyak shard = lebih cepat tapi lebih banyak menit runner).
+- [ ] Atur `SHARDS` (untuk 20–30 flow mulai dari 4; lihat "Menentukan jumlah `SHARDS`" di bagian 5). Nama file flow dibuat per fitur (`NN_<fitur>_<skenario>.yaml`), unik, dan tanpa spasi.
 - [ ] `timeout-minutes` disesuaikan dengan durasi flow terpanjang.
 - [ ] Jalankan `actionlint`, lalu **commit lokal saja**. User yang push.
 
