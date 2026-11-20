@@ -8,6 +8,8 @@
 >
 > **Cara pakai di proyek nyata:** salin file ini ke root repo, lalu di `CLAUDE.md` tambahkan
 > baris `@MAESTRO_CI_KNOWLEDGE.md` agar otomatis terbaca setiap sesi.
+>
+> **Aturan ringkas untuk generate test** ada di `MAESTRO_TEST_RULES.md`; bawa kedua file ini ke project nyata.
 
 ---
 
