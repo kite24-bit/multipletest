@@ -8,7 +8,7 @@ tags:
 - launchApp:
     clearState: true
 - takeScreenshot: 01_launch
-# Launch pertama setelah emulator boot (build debug) bisa lambat.
+# Launch pertama setelah emulator boot bisa lambat.
 - extendedWaitUntil:
     visible: "Flutter Demo Home Page"
     timeout: 60000

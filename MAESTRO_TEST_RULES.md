@@ -67,7 +67,7 @@
 
 24. Jangan pakai `executionOrder` di `config.yaml`, karena tidak bisa digabung dengan sharding.
 25. Jangan menambahkan filter tag (`--include-tags`, atau `includeTags` di config) di CI tanpa ikut memfilter daftar flow di job `build`. Kalau tidak, flow yang tersaring tercatat sebagai broken.
-26. Jangan mengubah trigger workflow, `SHARDS`, versi Maestro, atau konfigurasi emulator kecuali diminta.
+26. Jangan mengubah trigger workflow, `SHARDS`, versi Maestro, konfigurasi emulator, atau mode build (CI memakai APK **release**) kecuali diminta.
 
 ## H. Format jawaban saat generate test
 
@@ -76,6 +76,7 @@
 29. Tulis bagian **"Perlu perubahan di aplikasi"** kalau ada elemen yang butuh `Semantics(identifier:)`, beserta usulan kodenya. Kalau tidak ada, tulis "tidak ada".
 30. Sertakan perintah untuk menjalankan di lokal:
     ```bash
+    flutter build apk --release && adb install -r build/app/outputs/flutter-apk/app-release.apk
     maestro test .maestro/flows/<file>.yaml                    # satu flow
     maestro test .maestro/flows/<a>.yaml .maestro/flows/<b>.yaml --config .maestro/config.yaml
     ```

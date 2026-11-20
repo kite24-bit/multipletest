@@ -67,12 +67,15 @@ jobs:
           channel: stable
           cache: true
 
-      - run: flutter build apk --debug
+      # Release: lebih kecil (~42 MB vs ~157 MB debug) dan jauh lebih cepat
+      # di emulator. Maestro black-box, jadi tidak butuh build debug.
+      # APK release tetap berisi x86_64, jadi bisa jalan di emulator CI.
+      - run: flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
       # Bagi flow ke shard secara round-robin, contoh SHARDS=2 dengan 3 flow:
       # [{"name":"shard-1","flows":"01.yaml 03.yaml"},{"name":"shard-2","flows":"02.yaml"}]
@@ -99,7 +102,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: app-debug-apk
+          name: app-release-apk
 
       - uses: actions/setup-java@v4
         with:
@@ -198,7 +201,7 @@ jobs:
           # yang dikirim folder, bukan daftar file flow.
           script: |
             adb shell settings put global hide_error_dialogs 1
-            adb install -r app-debug.apk
+            adb install -r app-release.apk
             maestro test ${{ matrix.shard.flows }} --config .maestro/config.yaml --test-output-dir maestro-debug
 
       # Maestro tidak punya output Allure dan JUnit-nya tanpa step, jadi

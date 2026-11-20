@@ -38,7 +38,7 @@
 | Emulator di CI | `reactivecircus/android-emulator-runner@v2`, `api-level: 34`, `target: google_apis`, `arch: x86_64` | Emulator berjalan headless otomatis. `google_apis` (tanpa Play Store) menghindari dialog "Google Play Store keeps stopping". |
 | Paralel di CI | **Matrix per shard** (`SHARDS` di `env`, default 2). Flow dibagi round-robin ke shard; tiap shard = 1 job + 1 emulator, flow di dalamnya jalan berurutan (`maestro test a.yaml b.yaml`). | Boot emulator + install Maestro (±2–3 menit) cuma sekali per shard, bukan per flow. `--shard-split` bawaan Maestro butuh banyak device di **satu mesin**, sedangkan runner GitHub (emulator-runner) cuma 1 emulator per job, jadi sharding dilakukan lewat matrix. Daftar flow dibuat otomatis dengan `find`. |
 | Paralel di lokal | `maestro --device a,b test .maestro --shard-split 2` | Satu perintah untuk banyak emulator di satu mesin. |
-| Build | APK dibangun **sekali** di job `build`, lalu dibagikan lewat artifact ke semua job test. | Menghemat waktu; setiap job test tidak perlu Flutter. |
+| Build | APK **release** dibangun **sekali** di job `build`, lalu dibagikan lewat artifact ke semua job test. | Menghemat waktu; setiap job test tidak perlu Flutter. Release jauh lebih kecil (~42 MB vs ~157 MB debug) dan lebih cepat di emulator (3 flow: ~27 detik vs ~1 menit), dan Maestro black-box sehingga tidak butuh build debug. |
 | Reporting | **Allure 2.46.2** (`allure generate --single-file`), sumbernya hasil konversi `commands.json` Maestro | JUnit Maestro tidak berisi step, dan report HTML Maestro hanya per job (tidak bisa digabung). Allure bisa menggabungkan semua flow + step + screenshot. |
 | Artifact untuk debug | `maestro-debug-<flow>` (folder `--test-output-dir` mentah) | Untuk investigasi ketika flow gagal. |
 
@@ -77,7 +77,7 @@ flows:
 1. **Satu file = satu test case.** Nama file diberi nomor urut dan snake_case, misalnya `02_tambah_counter.yaml`. Nama file (tanpa `.yaml`) menjadi `subSuite` di Allure.
 2. Header berisi `appId`, `name` (kalimat deskriptif, tampil sebagai judul test di Allure), dan `tags` (`smoke` / `regression` / dst). Header ditutup dengan `---`.
 3. **Setiap flow harus mandiri**: mulai dengan `launchApp: clearState: true`. Urutan dan device tidak dijamin.
-4. Setelah launch, gunakan `extendedWaitUntil` sampai elemen halaman utama terlihat, dengan `timeout: 60000`. Launch pertama build debug di emulator yang baru boot bisa sangat lambat.
+4. Setelah launch, gunakan `extendedWaitUntil` sampai elemen halaman utama terlihat, dengan `timeout: 60000`. Launch pertama di emulator yang baru boot bisa lambat.
 5. **Pasang `takeScreenshot` setelah setiap step**, dengan nama bernomor yang unik di dalam flow (`01_launch`, `02_halaman_utama`, ...). Converter menempelkan gambar ke step **sebelumnya** di level yang sama, dan step `takeScreenshot` sendiri disembunyikan.
    - Jangan taruh `takeScreenshot` di dalam `repeat`. Taruh setelah blok `repeat`; gambarnya akan menempel ke step "Repeat N times".
    - Nama harus unik di dalam flow, karena file dengan nama sama akan tertimpa.
@@ -101,7 +101,7 @@ tags:
 - launchApp:
     clearState: true
 - takeScreenshot: 01_launch
-# Launch pertama setelah emulator boot (build debug) bisa lambat.
+# Launch pertama setelah emulator boot bisa lambat.
 - extendedWaitUntil:
     visible: "Flutter Demo Home Page"
     timeout: 60000
@@ -142,7 +142,7 @@ Contoh background:
 Alurnya ada 3 tahap:
 
 0. **Syarat trigger**: workflow tidak dipicu langsung oleh push. Ia menunggu `PR AI Code Review` selesai (`workflow_run`, `branches: [uat]`), lalu job `build` hanya jalan kalau review dipicu oleh `push` dan `conclusion == 'success'`. Kalau `build` di-skip, semua job lain ikut skip.
-1. **`build`**: membangun APK debug sekali, meng-upload-nya sebagai artifact, lalu membagi flow ke `SHARDS` shard (JSON untuk matrix).
+1. **`build`**: membangun APK **release** sekali, meng-upload-nya sebagai artifact, lalu membagi flow ke `SHARDS` shard (JSON untuk matrix).
 2. **`maestro`** (matrix): satu job per shard, semuanya paralel. Setiap job menyalakan emulator headless, install APK, menjalankan semua flow shard itu dengan satu `maestro test`, mengonversi hasil ke Allure, lalu meng-upload `maestro-allure-<shard>` dan `maestro-debug-<shard>`.
 3. **`allure-report`**: mengunduh semua `maestro-allure-*` ke **satu folder** (`merge-multiple: true`, aman karena nama file berupa UUID). Hasilnya **satu** `index.html`, ringkasan pass/fail di Job Summary, dan artifact `allure-report-maestro`.
 
@@ -218,12 +218,15 @@ jobs:
           channel: stable
           cache: true
 
-      - run: flutter build apk --debug
+      # Release: lebih kecil (~42 MB vs ~157 MB debug) dan jauh lebih cepat
+      # di emulator. Maestro black-box, jadi tidak butuh build debug.
+      # APK release tetap berisi x86_64, jadi bisa jalan di emulator CI.
+      - run: flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
       # Bagi flow ke shard secara round-robin, contoh SHARDS=2 dengan 3 flow:
       # [{"name":"shard-1","flows":"01.yaml 03.yaml"},{"name":"shard-2","flows":"02.yaml"}]
@@ -250,7 +253,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: app-debug-apk
+          name: app-release-apk
 
       - uses: actions/setup-java@v4
         with:
@@ -349,7 +352,7 @@ jobs:
           # yang dikirim folder, bukan daftar file flow.
           script: |
             adb shell settings put global hide_error_dialogs 1
-            adb install -r app-debug.apk
+            adb install -r app-release.apk
             maestro test ${{ matrix.shard.flows }} --config .maestro/config.yaml --test-output-dir maestro-debug
 
       # Maestro tidak punya output Allure dan JUnit-nya tanpa step, jadi
@@ -416,6 +419,9 @@ jobs:
 
 ### Catatan penting workflow
 
+- **Build release di project nyata:** butuh keystore release. Simpan keystore (base64) dan password-nya di GitHub Secrets, lalu tulis `key.properties` sebelum build. Di repo dummy, build release masih ditandatangani debug key bawaan template Flutter, jadi tidak perlu secret.
+- **Cek fitur keamanan di build release** sebelum dipakai untuk E2E: deteksi emulator/root (misalnya freeRASP), SSL pinning, atau screenshot blocking (`FLAG_SECURE`) bisa membuat app menutup diri di emulator, request gagal, atau screenshot hitam. Kalau ada, pakai flavor/build khusus test (misalnya `uat`) yang mematikan proteksi itu, atau tanya tim app.
+- APK release Flutter default berisi `arm64-v8a`, `armeabi-v7a`, dan `x86_64`, jadi bisa jalan di emulator x86_64 CI. Jangan pakai `--split-per-abi` tanpa memilih APK x86_64.
 - **Cache** (hemat waktu per shard): `~/.maestro` di-cache dengan key `maestro-<MAESTRO_VERSION>` (versi dipin lewat env `MAESTRO_VERSION`, yang dibaca installer resmi). Snapshot emulator (`~/.android/avd/*`, `~/.android/adb*`) di-cache dengan key `avd-<api>-<target>-<arch>`, mengikuti pola README `android-emulator-runner`: kalau cache kosong, step `Create AVD snapshot` boot sekali tanpa `-no-snapshot` lalu disimpan; step test memakai `force-avd-creation: false` + `-no-snapshot-save` supaya snapshot di cache tetap bersih.
 - Pakai `actions/cache/restore` + `actions/cache/save` terpisah, **bukan** `actions/cache`. `actions/cache` hanya menyimpan cache kalau job sukses, jadi kalau ada flow gagal di run pertama, cache tidak pernah tersimpan.
 - Run pertama (atau setelah `MAESTRO_VERSION`/konfigurasi emulator diubah) lebih lama karena membuat cache. Kalau beberapa shard menyimpan key yang sama bersamaan, yang kalah hanya dapat warning "Unable to reserve cache" (tidak gagal).
@@ -792,9 +798,9 @@ struktur JSON sebuah command: buka `commands.json` di artifact `maestro-debug-<f
 brew install mobile-dev-inc/tap/maestro
 export MAESTRO_CLI_NO_ANALYTICS=1
 
-# Build APK debug
-flutter build apk --debug
-adb install -r build/app/outputs/flutter-apk/app-debug.apk
+# Build APK release (sama seperti CI)
+flutter build apk --release
+adb install -r build/app/outputs/flutter-apk/app-release.apk
 
 # Satu flow
 maestro test .maestro/flows/02_tambah_counter.yaml
@@ -832,10 +838,11 @@ Hal yang perlu diketahui:
 | Gejala | Penyebab | Solusi |
 |---|---|---|
 | Flow gagal acak di emulator yang baru boot, dan screenshot menunjukkan dialog "Google Play Store keeps stopping" | Image dengan Play Store dan dialog crash sistem | `target: google_apis` + `adb shell settings put global hide_error_dialogs 1` sebelum test |
-| Elemen pertama tidak ditemukan atau timeout setelah launch | Launch pertama build debug lambat | `extendedWaitUntil` dengan `timeout: 60000` setelah `launchApp` |
+| Elemen pertama tidak ditemukan atau timeout setelah launch | Launch pertama di emulator yang baru boot lambat | `extendedWaitUntil` dengan `timeout: 60000` setelah `launchApp` |
 | Laporan Allure kosong (0 test) | Hasil berada di subfolder; Allure hanya membaca level teratas | Atur path upload/download agar file berada langsung di folder hasil |
 | Allure muncul tetapi tanpa step | Sumbernya JUnit XML, yang tidak punya step | Pakai converter `commands.json` → Allure |
 | Flow yang gagal/error tidak muncul di Allure (report terlihat hijau) | Download installer Maestro putus (`curl: (56) Connection reset`), installer tetap exit 0, `maestro` tidak ada (exit 127), jadi tidak ada `commands.json` | Install Maestro dengan retry + cek `maestro --version`; converter menerima daftar flow dan menulis flow tanpa output sebagai **broken** |
+| Tap terlewat sehingga counter/hasil kurang satu, dan di `maestro.log` ada tap yang menunggu "settled hierarchy" puluhan detik | Emulator sempat macet (sering terjadi tak lama setelah boot); tap terkirim saat UI belum siap | Flaky emulator, bukan bug app; jalankan ulang. Kalau sering, tambahkan assert setelah tap penting supaya Maestro menunggu UI berubah |
 | "Kok hasilnya sama saja?" setelah fix | Run yang dilihat adalah run lama (misalnya run `push: main` dari merge sebelumnya), bukan commit fix | Cek SHA commit di run sebelum menyimpulkan |
 | Maestro tidak jalan sama sekali setelah push ke `uat` | `maestro.yml` belum ada di `main`, `name` workflow review tidak cocok, atau review tidak punya trigger push `uat` | Merge workflow ke `main`, samakan `workflows:` dengan `name:` review, dan tambahkan `push: branches: [uat]` di review |
 | `actionlint` SC2012 | Memakai `ls` untuk listing | Pakai `find` |
@@ -849,7 +856,7 @@ Saat menerapkan ke proyek nyata, sesuaikan hal-hal berikut. Cek repo dulu dan ta
 
 - [ ] `appId` di setiap flow = `applicationId` di `android/app/build.gradle(.kts)`. Kalau ada flavor, suffix-nya ikut, misalnya `com.company.app.dev`.
 - [ ] `flutter-version` di workflow sama dengan versi proyek (cek `.fvmrc`, `pubspec.yaml` environment, atau tanya user).
-- [ ] Perintah build. Kalau ada flavor/entrypoint: `flutter build apk --debug --flavor dev -t lib/main_dev.dart`. **Path APK ikut berubah**, misalnya `build/app/outputs/flutter-apk/app-dev-debug.apk`. Update `path` upload dan nama file di `adb install`.
+- [ ] Perintah build. Kalau ada flavor/entrypoint: `flutter build apk --release --flavor uat -t lib/main_uat.dart`. **Path APK ikut berubah**, misalnya `build/app/outputs/flutter-apk/app-uat-release.apk`. Update `path` upload dan nama file di `adb install`.
 - [ ] Untuk `--dart-define` / env rahasia, pakai GitHub Secrets (`${{ secrets.X }}`). Jangan hardcode.
 - [ ] Kredensial login untuk test: kirim lewat `maestro test -e USERNAME=${{ secrets.E2E_USER }} -e PASSWORD=...`, lalu pakai `${USERNAME}` di flow.
 - [ ] Teks selector disesuaikan dengan UI nyata. Kalau aplikasi multi-bahasa, pertimbangkan `Semantics(identifier:)` + `id:` agar tidak bergantung teks.
@@ -866,7 +873,7 @@ Saat menerapkan ke proyek nyata, sesuaikan hal-hal berikut. Cek repo dulu dan ta
 E2E Flutter Android memakai **Maestro**, dengan satu file YAML per test case di `.maestro/flows/`.
 Setiap flow mandiri (`clearState`), menunggu layar pertama hingga 60 detik, dan mengambil
 `takeScreenshot` setelah setiap step. CI memakai **GitHub Actions tanpa shell script**. Job `build`
-membuat APK debug sekali dan membagi flow ke `SHARDS` shard. Job `maestro` adalah matrix satu job per shard,
+membuat APK release sekali dan membagi flow ke `SHARDS` shard. Job `maestro` adalah matrix satu job per shard,
 masing-masing dengan emulator headless `reactivecircus/android-emulator-runner@v2` (API 34,
 `google_apis`, KVM, `hide_error_dialogs`). Hasil `commands.json` dikonversi menjadi hasil
 **Allure** oleh `.github/scripts/maestro_to_allure.py` (step + screenshot per step + log). Job
