@@ -45,7 +45,6 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
-  patrol: ^4.11.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -88,11 +87,3 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
-
-patrol:
-  app_name: testflutter
-  test_directory: patrol_test
-  android:
-    package_name: com.example.testflutter
-  ios:
-    bundle_id: com.example.testflutter
