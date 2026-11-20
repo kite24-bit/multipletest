@@ -6,7 +6,10 @@ Detail per langkah ada di `<test-output-dir>/<timestamp>/<flow>/commands.json`
 (data yang sama dipakai Maestro untuk laporan HTML-DETAILED).
 
 Pemakaian:
-    python3 maestro_to_allure.py <maestro-test-output-dir> <allure-results-dir>
+    python3 maestro_to_allure.py <maestro-test-output-dir> <allure-results-dir> [flow.yaml ...]
+
+Kalau file flow disebutkan, flow yang tidak punya output (mis. Maestro gagal
+diinstal atau emulator crash) tetap masuk laporan sebagai "broken".
 """
 
 import hashlib
@@ -190,23 +193,78 @@ def convert_flow(flow_dir, results_dir):
     }
     if failure:
         result["statusDetails"] = failure
+    write_result(results_dir, result)
+    return flow_name, status, file_name
+
+
+def write_result(results_dir, result):
     with open(os.path.join(results_dir, f"{result['uuid']}-result.json"), "w") as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
-    return flow_name, status
+
+
+def read_header(flow_file):
+    """Ambil `name` dan `tags` dari header flow (bagian sebelum `---`)."""
+    name, tags, in_tags = None, [], False
+    for line in open(flow_file):
+        if line.strip() == "---":
+            break
+        if line.startswith("name:"):
+            name = line.split(":", 1)[1].strip().strip("\"'")
+        in_tags = line.startswith("tags:") or (in_tags and line.lstrip().startswith("-"))
+        if in_tags and line.lstrip().startswith("-"):
+            tags.append(line.lstrip()[1:].strip().strip("\"'"))
+    return name, tags
+
+
+def write_broken(results_dir, flow_file):
+    """Flow yang tidak menghasilkan output tetap dicatat di laporan."""
+    file_name = os.path.splitext(os.path.basename(flow_file))[0]
+    name, tags = read_header(flow_file)
+    name = name or file_name
+    run_url = "{}/{}/actions/runs/{}".format(
+        os.environ.get("GITHUB_SERVER_URL", ""),
+        os.environ.get("GITHUB_REPOSITORY", ""),
+        os.environ.get("GITHUB_RUN_ID", ""),
+    )
+    labels = [
+        {"name": "framework", "value": "maestro"},
+        {"name": "suite", "value": "Maestro"},
+        {"name": "subSuite", "value": file_name},
+    ] + [{"name": "tag", "value": t} for t in tags]
+    write_result(results_dir, {
+        "uuid": str(uuid.uuid4()),
+        "historyId": hashlib.md5(name.encode()).hexdigest(),
+        "name": name,
+        "fullName": f"maestro.{file_name}",
+        "status": "broken",
+        "stage": "finished",
+        "labels": labels,
+        "steps": [],
+        "attachments": [],
+        "statusDetails": {
+            "message": "Flow tidak jalan: Maestro tidak menghasilkan output "
+                       "(mis. Maestro gagal diinstal atau emulator bermasalah). "
+                       f"Cek log job di {run_url}",
+        },
+    })
+    return name
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) < 3:
         sys.exit(__doc__)
-    debug_dir, results_dir = sys.argv[1], sys.argv[2]
+    debug_dir, results_dir, flow_files = sys.argv[1], sys.argv[2], sys.argv[3:]
     os.makedirs(results_dir, exist_ok=True)
-    found = 0
+    done = set()
     for root, _, files in os.walk(debug_dir):
         if "commands.json" in files:
-            name, status = convert_flow(root, results_dir)
+            name, status, file_name = convert_flow(root, results_dir)
             print(f"{status:>7}  {name}")
-            found += 1
-    if not found:
+            done.add(file_name)
+    for flow_file in flow_files:
+        if os.path.splitext(os.path.basename(flow_file))[0] not in done:
+            print(f"{'broken':>7}  {write_broken(results_dir, flow_file)}")
+    if not done and not flow_files:
         sys.exit(f"Tidak ada commands.json di {debug_dir}")
 
 

@@ -21,10 +21,15 @@ permissions:
 
 env:
   ALLURE_VERSION: 2.46.2
+  # Jumlah shard = jumlah emulator/job paralel. Flow dibagi rata ke tiap
+  # shard, lalu dijalankan berurutan di emulator shard tersebut. Overhead
+  # boot emulator + install Maestro cuma sekali per shard, bukan per flow.
+  SHARDS: 2
+  MAESTRO_CLI_NO_ANALYTICS: 1
 
 jobs:
   # 1. Build APK sekali, dipakai ulang oleh semua job test.
-  #    Sekalian membuat daftar flow untuk matrix, jadi flow baru di
+  #    Sekalian membagi flow ke shard untuk matrix, jadi flow baru di
   #    .maestro/flows/ otomatis ikut jalan tanpa mengubah workflow ini.
   build:
     # Syarat: review dipicu oleh push (bukan PR) dan lolos tanpa error.
@@ -35,7 +40,7 @@ jobs:
        github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     outputs:
-      flows: ${{ steps.flows.outputs.list }}
+      shards: ${{ steps.shards.outputs.list }}
     steps:
       # workflow_run defaultnya checkout main; ambil commit yang direview.
       - uses: actions/checkout@v4
@@ -60,22 +65,24 @@ jobs:
           name: app-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
 
-      - id: flows
+      # Bagi flow ke shard secara round-robin, contoh SHARDS=2 dengan 3 flow:
+      # [{"name":"shard-1","flows":"01.yaml 03.yaml"},{"name":"shard-2","flows":"02.yaml"}]
+      - id: shards
         run: |
-          list=$(find .maestro/flows -name '*.yaml' | sort | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: (split("/")[-1] | rtrimstr(".yaml")), path: .})')
+          list=$(find .maestro/flows -name '*.yaml' | sort | jq -R -s -c --argjson n "$SHARDS" 'split("\n") | map(select(length > 0)) as $f | [range([$n, ($f | length)] | min) as $i | {name: "shard-\($i + 1)", flows: ([$f | to_entries[] | select(.key % $n == $i) | .value] | join(" "))}]')
           echo "list=$list" >> "$GITHUB_OUTPUT"
 
-  # 2. Satu job per flow, semuanya jalan paralel, masing-masing dengan
-  #    emulator headless sendiri.
+  # 2. Satu job per shard, semuanya jalan paralel, masing-masing dengan
+  #    emulator headless sendiri. Flow di dalam shard jalan berurutan.
   maestro:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        flow: ${{ fromJson(needs.build.outputs.flows) }}
-    name: maestro (${{ matrix.flow.name }})
+        shard: ${{ fromJson(needs.build.outputs.shards) }}
+    name: maestro (${{ matrix.shard.name }})
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,9 +97,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # Download installer kadang putus (connection reset) tapi installer
+      # tidak gagal, jadi coba ulang sampai `maestro --version` berhasil.
       - name: Install Maestro
         run: |
-          curl -Ls "https://get.maestro.mobile.dev" | bash
+          for i in 1 2 3; do
+            curl -fsSL "https://get.maestro.mobile.dev" | bash && "$HOME/.maestro/bin/maestro" --version && break
+            echo "Install Maestro gagal (percobaan $i), coba lagi..."
+            sleep 10
+          done
+          "$HOME/.maestro/bin/maestro" --version
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       # Wajib agar emulator x86_64 bisa pakai akselerasi hardware di runner Linux.
@@ -106,8 +120,6 @@ jobs:
       # mematikan animasi, menjalankan `script`, lalu mematikan emulator.
       - name: Run Maestro flow
         uses: reactivecircus/android-emulator-runner@v2
-        env:
-          MAESTRO_CLI_NO_ANALYTICS: 1
         with:
           api-level: 34
           # google_apis = tanpa Play Store, jadi tidak ada dialog
@@ -119,19 +131,21 @@ jobs:
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb install -r app-debug.apk
-            maestro test ${{ matrix.flow.path }} --test-output-dir maestro-debug
+            maestro test ${{ matrix.shard.flows }} --test-output-dir maestro-debug
 
       # Maestro tidak punya output Allure dan JUnit-nya tanpa step, jadi
       # commands.json (detail per langkah + screenshot) dikonversi ke hasil Allure.
+      # Daftar flow ikut dikirim: flow yang tidak punya output (mis. Maestro
+      # gagal diinstal) tetap masuk laporan sebagai "broken".
       - name: Convert to Allure results
         if: always()
-        run: python3 .github/scripts/maestro_to_allure.py maestro-debug allure-results
+        run: python3 .github/scripts/maestro_to_allure.py maestro-debug allure-results ${{ matrix.shard.flows }}
 
-      # Hasil Allure per flow: bahan laporan gabungan di job `allure-report`.
+      # Hasil Allure per shard: bahan laporan gabungan di job `allure-report`.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-allure-${{ matrix.flow.name }}
+          name: maestro-allure-${{ matrix.shard.name }}
           path: allure-results/
           if-no-files-found: ignore
 
@@ -139,7 +153,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-debug-${{ matrix.flow.name }}
+          name: maestro-debug-${{ matrix.shard.name }}
           path: maestro-debug/
           if-no-files-found: ignore
 
