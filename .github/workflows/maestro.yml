@@ -1,10 +1,23 @@
 name: Maestro E2E
+run-name: Maestro E2E (${{ github.event.workflow_run.head_branch || github.ref_name }})
 
+# Syarat jalan: ada push ke branch uat DAN workflow "PR AI Code Review" untuk
+# push itu selesai tanpa error. Jadi workflow ini menunggu review selesai
+# (workflow_run), lalu job `build` mengecek hasilnya.
+# Catatan: trigger workflow_run hanya aktif kalau file ini sudah ada di
+# default branch (main).
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_run:
+    # Harus sama persis dengan `name:` di pr-ai-code-review.yml.
+    workflows: [PR AI Code Review]
+    types: [completed]
+    branches: [uat]
   workflow_dispatch:
+
+# workflow_run berjalan dengan hak akses penuh repo; batasi token ke
+# read-only karena workflow ini menjalankan kode dari branch yang direview.
+permissions:
+  contents: read
 
 env:
   ALLURE_VERSION: 2.46.2
@@ -14,11 +27,20 @@ jobs:
   #    Sekalian membuat daftar flow untuk matrix, jadi flow baru di
   #    .maestro/flows/ otomatis ikut jalan tanpa mengubah workflow ini.
   build:
+    # Syarat: review dipicu oleh push (bukan PR) dan lolos tanpa error.
+    # Dijalankan manual (workflow_dispatch) selalu boleh.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     outputs:
       flows: ${{ steps.flows.outputs.list }}
     steps:
+      # workflow_run defaultnya checkout main; ambil commit yang direview.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-java@v4
         with:
@@ -56,6 +78,8 @@ jobs:
     name: maestro (${{ matrix.flow.name }})
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -122,7 +146,8 @@ jobs:
   # 3. Gabungkan hasil SEMUA flow jadi SATU laporan Allure.
   allure-report:
     needs: maestro
-    if: ${{ !cancelled() }}
+    # Lewati juga kalau test tidak jalan (review gagal -> build di-skip).
+    if: ${{ !cancelled() && needs.maestro.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

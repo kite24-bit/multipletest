@@ -1,0 +1,16 @@
+# DUMMY: pengganti workflow AI code review yang ada di project asli.
+# Isinya hanya placeholder; yang penting `name:` dan trigger-nya, karena
+# workflow Maestro E2E menunggu workflow ini selesai tanpa error.
+name: PR AI Code Review
+
+on:
+  pull_request:
+  # Wajib ada: Maestro hanya jalan setelah review untuk push ke uat lolos.
+  push:
+    branches: [uat]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Dummy AI code review lolos"
