@@ -138,6 +138,10 @@ workflows:
       java: 17
       vars:
         <<: *maestro_vars
+        # Driver iOS (XCTest runner) di beberapa simulator sekaligus lambat
+        # siap di Mac M2; default-nya terlalu pendek (shard kedua timeout).
+        # Dalam milidetik: 300000 = 5 menit.
+        MAESTRO_DRIVER_STARTUP_TIMEOUT: 300000
     scripts:
       # Simulator tidak bisa menjalankan build release Flutter, jadi pakai
       # debug. Build simulator tidak perlu signing/sertifikat Apple.
