@@ -1,0 +1,107 @@
+# Maestro E2E di Codemagic: build APK release, lalu test di emulator headless.
+# Codemagic tidak punya matrix, jadi semua emulator jalan di SATU mesin dan
+# flow dibagi oleh Maestro sendiri (--shard-split).
+workflows:
+  maestro-e2e:
+    name: Maestro E2E
+    # Emulator Android hanya bisa di Linux (Mac M2/M4 Codemagic tidak bisa).
+    # linux_x2 = 8 vCPU / 32 GB, nyaman untuk 2-3 emulator.
+    # linux_x4 = 16 vCPU / 64 GB, untuk 4-5 emulator.
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      flutter: 3.38.10
+      java: 17
+      vars:
+        # Jumlah emulator = jumlah shard. Jangan melebihi kapasitas mesin.
+        SHARDS: 2
+        MAESTRO_VERSION: 2.12.1
+        MAESTRO_CLI_NO_ANALYTICS: 1
+        ALLURE_VERSION: 2.46.2
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      # Di project asli: pakai step build + signing yang sudah ada.
+      - name: Build APK release
+        script: flutter build apk --release
+
+      # Dinyalakan duluan supaya boot berjalan bersamaan dengan install Maestro.
+      # AVD "emulator" sudah tersedia di mesin Linux Codemagic (API 34, x86_64).
+      # -read-only wajib supaya satu AVD bisa dinyalakan beberapa kali.
+      - name: Nyalakan emulator
+        script: |
+          for i in $(seq 1 $SHARDS); do
+            port=$((5552 + i * 2))
+            nohup emulator -avd emulator -port $port -no-window -no-audio -no-boot-anim -read-only -no-snapshot-save -gpu swiftshader_indirect > emulator-$port.log 2>&1 &
+          done
+
+      # Download installer kadang putus tapi installer tidak gagal, jadi coba
+      # ulang sampai `maestro --version` berhasil.
+      - name: Install Maestro
+        script: |
+          for i in 1 2 3; do
+            curl -fsSL "https://get.maestro.mobile.dev" | bash && "$HOME/.maestro/bin/maestro" --version && break
+            echo "Install Maestro gagal (percobaan $i), coba lagi..."
+            sleep 10
+          done
+          "$HOME/.maestro/bin/maestro" --version
+
+      # hide_error_dialogs: AVD bawaan berisi Play Store, dan dialog
+      # "Google Play Store keeps stopping" bisa menutupi app (flow gagal palsu).
+      - name: Tunggu emulator dan install APK
+        script: |
+          set -e
+          for i in $(seq 1 $SHARDS); do
+            s=emulator-$((5552 + i * 2))
+            timeout 600 adb -s $s wait-for-device
+            timeout 600 sh -c "until [ \"\$(adb -s $s shell getprop sys.boot_completed | tr -d '\r')\" = 1 ]; do sleep 5; done"
+            adb -s $s shell settings put global hide_error_dialogs 1
+            adb -s $s shell settings put global window_animation_scale 0
+            adb -s $s shell settings put global transition_animation_scale 0
+            adb -s $s shell settings put global animator_duration_scale 0
+            adb -s $s install -r build/app/outputs/flutter-apk/app-release.apk
+          done
+
+      # Kirim folder .maestro (bukan .maestro/flows) supaya config.yaml
+      # otomatis terbaca. Kalau ada flow gagal, step ini tetap lanjut supaya
+      # laporan tetap dibuat; build digagalkan di akhir (publishing).
+      # JUnit ditampilkan Codemagic di tab Tests.
+      - name: Jalankan Maestro
+        script: |
+          mkdir -p maestro-report
+          "$HOME/.maestro/bin/maestro" test .maestro --shard-split $SHARDS --format junit --output maestro-report/junit.xml --test-output-dir maestro-debug || touch maestro-failed
+        test_report: maestro-report/junit.xml
+
+      # Converter yang sama dengan GitHub Actions. Daftar flow ikut dikirim
+      # supaya flow yang tidak jalan tetap masuk laporan sebagai "broken".
+      - name: Buat laporan Allure
+        script: |
+          set -e
+          python3 .github/scripts/maestro_to_allure.py maestro-debug allure-results $(find .maestro/flows -name '*.yaml' | sort)
+          # Download bisa putus di tengah (connection reset), jadi coba ulang.
+          curl -fsSL --retry 5 --retry-all-errors -o allure.zip "https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.zip"
+          unzip -q allure.zip -d allure-cli
+          "$(find allure-cli -path '*/bin/allure' | head -1)" generate --single-file --clean -o allure-report allure-results
+          jq -r '"Maestro: \(.stats.passed)/\(.stats.total) passed, \(.stats.failed) failed, \(.stats.broken) broken"' allure-report/summary.json
+          # Isi CM_EXPORT_DIR otomatis di-zip jadi artifact.
+          cp -r maestro-debug "$CM_EXPORT_DIR/" || true
+
+    artifacts:
+      - allure-report/index.html
+      - maestro-report/junit.xml
+      - build/app/outputs/flutter-apk/app-release.apk
+
+    publishing:
+      scripts:
+        # Publishing jalan apa pun status build-nya, setelah artifact
+        # dikumpulkan. Build ditandai gagal kalau ada flow yang gagal.
+        - name: Cek hasil Maestro
+          script: |
+            if [ -f maestro-failed ]; then
+              echo "Ada flow Maestro yang gagal. Lihat allure-report/index.html."
+              exit 1
+            fi

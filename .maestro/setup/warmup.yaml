@@ -1,0 +1,12 @@
+# Bukan test case: dijalankan sekali per device sebelum flow utama untuk
+# "memanaskan" driver Maestro + aplikasi di emulator yang baru boot.
+# Hasilnya diabaikan oleh scripts/run_maestro_parallel.sh.
+appId: com.example.testflutter
+name: Warm-up
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Flutter Demo Home Page"
+    timeout: 60000
+- stopApp
