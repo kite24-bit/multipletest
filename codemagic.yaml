@@ -1,9 +1,72 @@
-# Maestro E2E di Codemagic: build APK release, lalu test di emulator headless.
-# Codemagic tidak punya matrix, jadi semua emulator jalan di SATU mesin dan
-# flow dibagi oleh Maestro sendiri (--shard-split).
+# Maestro E2E di Codemagic. Ada dua workflow:
+#   - maestro-e2e          : Android, APK release di emulator. Butuh mesin Linux
+#                            (billing aktif, tidak bisa di free plan).
+#   - maestro-e2e-ios-free : iOS di simulator. Jalan di Mac M2 (bisa free plan).
+# Codemagic tidak punya matrix, jadi semua emulator/simulator jalan di SATU
+# mesin dan flow dibagi oleh Maestro sendiri (--shard-split).
+
+# Bagian yang dipakai kedua workflow (YAML anchor: &nama dipakai ulang lewat *nama).
+definitions:
+  maestro_vars: &maestro_vars
+    # Jumlah emulator/simulator = jumlah shard. Jangan melebihi kapasitas mesin.
+    SHARDS: 2
+    MAESTRO_VERSION: 2.12.1
+    MAESTRO_CLI_NO_ANALYTICS: 1
+    ALLURE_VERSION: 2.46.2
+
+  scripts:
+    # Download installer kadang putus tapi installer tidak gagal, jadi coba
+    # ulang sampai `maestro --version` berhasil.
+    - &install_maestro
+      name: Install Maestro
+      script: |
+        for i in 1 2 3; do
+          curl -fsSL "https://get.maestro.mobile.dev" | bash && "$HOME/.maestro/bin/maestro" --version && break
+          echo "Install Maestro gagal (percobaan $i), coba lagi..."
+          sleep 10
+        done
+        "$HOME/.maestro/bin/maestro" --version
+
+    # Kirim folder .maestro (bukan .maestro/flows) supaya config.yaml
+    # otomatis terbaca. Kalau ada flow gagal, step ini tetap lanjut supaya
+    # laporan tetap dibuat; build digagalkan di akhir (publishing).
+    # JUnit ditampilkan Codemagic di tab Tests.
+    - &run_maestro
+      name: Jalankan Maestro
+      script: |
+        mkdir -p maestro-report
+        "$HOME/.maestro/bin/maestro" test .maestro --shard-split $SHARDS --format junit --output maestro-report/junit.xml --test-output-dir maestro-debug || touch maestro-failed
+      test_report: maestro-report/junit.xml
+
+    # Converter yang sama dengan GitHub Actions. Daftar flow ikut dikirim
+    # supaya flow yang tidak jalan tetap masuk laporan sebagai "broken".
+    - &allure_report
+      name: Buat laporan Allure
+      script: |
+        set -e
+        python3 .github/scripts/maestro_to_allure.py maestro-debug allure-results $(find .maestro/flows -name '*.yaml' | sort)
+        # Download bisa putus di tengah (connection reset), jadi coba ulang.
+        curl -fsSL --retry 5 --retry-all-errors -o allure.zip "https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.zip"
+        unzip -q allure.zip -d allure-cli
+        "$(find allure-cli -path '*/bin/allure' | head -1)" generate --single-file --clean -o allure-report allure-results
+        jq -r '"Maestro: \(.stats.passed)/\(.stats.total) passed, \(.stats.failed) failed, \(.stats.broken) broken"' allure-report/summary.json
+        # Isi CM_EXPORT_DIR otomatis di-zip jadi artifact.
+        cp -r maestro-debug "$CM_EXPORT_DIR/" || true
+
+  publishing: &maestro_publishing
+    scripts:
+      # Publishing jalan apa pun status build-nya, setelah artifact
+      # dikumpulkan. Build ditandai gagal kalau ada flow yang gagal.
+      - name: Cek hasil Maestro
+        script: |
+          if [ -f maestro-failed ]; then
+            echo "Ada flow Maestro yang gagal. Lihat allure-report/index.html."
+            exit 1
+          fi
+
 workflows:
   maestro-e2e:
-    name: Maestro E2E
+    name: Maestro E2E (Android)
     # Emulator Android hanya bisa di Linux (Mac M2/M4 Codemagic tidak bisa).
     # linux_x2 = 8 vCPU / 32 GB, nyaman untuk 2-3 emulator.
     # linux_x4 = 16 vCPU / 64 GB, untuk 4-5 emulator.
@@ -13,11 +76,7 @@ workflows:
       flutter: 3.38.10
       java: 17
       vars:
-        # Jumlah emulator = jumlah shard. Jangan melebihi kapasitas mesin.
-        SHARDS: 2
-        MAESTRO_VERSION: 2.12.1
-        MAESTRO_CLI_NO_ANALYTICS: 1
-        ALLURE_VERSION: 2.46.2
+        <<: *maestro_vars
     triggering:
       events:
         - push
@@ -39,16 +98,7 @@ workflows:
             nohup emulator -avd emulator -port $port -no-window -no-audio -no-boot-anim -read-only -no-snapshot-save -gpu swiftshader_indirect > emulator-$port.log 2>&1 &
           done
 
-      # Download installer kadang putus tapi installer tidak gagal, jadi coba
-      # ulang sampai `maestro --version` berhasil.
-      - name: Install Maestro
-        script: |
-          for i in 1 2 3; do
-            curl -fsSL "https://get.maestro.mobile.dev" | bash && "$HOME/.maestro/bin/maestro" --version && break
-            echo "Install Maestro gagal (percobaan $i), coba lagi..."
-            sleep 10
-          done
-          "$HOME/.maestro/bin/maestro" --version
+      - *install_maestro
 
       # hide_error_dialogs: AVD bawaan berisi Play Store, dan dialog
       # "Google Play Store keeps stopping" bisa menutupi app (flow gagal palsu).
@@ -66,42 +116,63 @@ workflows:
             adb -s $s install -r build/app/outputs/flutter-apk/app-release.apk
           done
 
-      # Kirim folder .maestro (bukan .maestro/flows) supaya config.yaml
-      # otomatis terbaca. Kalau ada flow gagal, step ini tetap lanjut supaya
-      # laporan tetap dibuat; build digagalkan di akhir (publishing).
-      # JUnit ditampilkan Codemagic di tab Tests.
-      - name: Jalankan Maestro
-        script: |
-          mkdir -p maestro-report
-          "$HOME/.maestro/bin/maestro" test .maestro --shard-split $SHARDS --format junit --output maestro-report/junit.xml --test-output-dir maestro-debug || touch maestro-failed
-        test_report: maestro-report/junit.xml
-
-      # Converter yang sama dengan GitHub Actions. Daftar flow ikut dikirim
-      # supaya flow yang tidak jalan tetap masuk laporan sebagai "broken".
-      - name: Buat laporan Allure
-        script: |
-          set -e
-          python3 .github/scripts/maestro_to_allure.py maestro-debug allure-results $(find .maestro/flows -name '*.yaml' | sort)
-          # Download bisa putus di tengah (connection reset), jadi coba ulang.
-          curl -fsSL --retry 5 --retry-all-errors -o allure.zip "https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.zip"
-          unzip -q allure.zip -d allure-cli
-          "$(find allure-cli -path '*/bin/allure' | head -1)" generate --single-file --clean -o allure-report allure-results
-          jq -r '"Maestro: \(.stats.passed)/\(.stats.total) passed, \(.stats.failed) failed, \(.stats.broken) broken"' allure-report/summary.json
-          # Isi CM_EXPORT_DIR otomatis di-zip jadi artifact.
-          cp -r maestro-debug "$CM_EXPORT_DIR/" || true
-
+      - *run_maestro
+      - *allure_report
     artifacts:
       - allure-report/index.html
       - maestro-report/junit.xml
       - build/app/outputs/flutter-apk/app-release.apk
-
     publishing:
-      scripts:
-        # Publishing jalan apa pun status build-nya, setelah artifact
-        # dikumpulkan. Build ditandai gagal kalau ada flow yang gagal.
-        - name: Cek hasil Maestro
-          script: |
-            if [ -f maestro-failed ]; then
-              echo "Ada flow Maestro yang gagal. Lihat allure-report/index.html."
-              exit 1
-            fi
+      <<: *maestro_publishing
+
+  maestro-e2e-ios-free:
+    name: Maestro E2E (iOS, free plan)
+    # Mac M2 bisa simulator iOS (tapi tidak bisa emulator Android).
+    # Termasuk jatah 500 menit gratis per bulan.
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    # Tanpa `triggering`: dijalankan manual dari Codemagic (Start new build).
+    environment:
+      flutter: 3.38.10
+      xcode: latest
+      java: 17
+      vars:
+        <<: *maestro_vars
+    scripts:
+      # Simulator tidak bisa menjalankan build release Flutter, jadi pakai
+      # debug. Build simulator tidak perlu signing/sertifikat Apple.
+      - name: Build app iOS untuk simulator
+        script: flutter build ios --simulator --debug
+
+      # Buat simulator baru sebanyak SHARDS memakai runtime iOS terbaru dan
+      # iPhone terbaru yang didukung runtime itu, lalu nyalakan semuanya.
+      - name: Nyalakan simulator
+        script: |
+          set -e
+          json=$(xcrun simctl list runtimes -j)
+          runtime=$(echo "$json" | jq -r '[.runtimes[] | select(.isAvailable and (.identifier | contains("SimRuntime.iOS")))] | last | .identifier')
+          type=$(echo "$json" | jq -r --arg r "$runtime" '.runtimes[] | select(.identifier == $r) | [.supportedDeviceTypes[] | select(.name | test("^iPhone [0-9]+$"))] | last | .identifier')
+          echo "Simulator: $type / $runtime"
+          for i in $(seq 1 $SHARDS); do
+            udid=$(xcrun simctl create "maestro-$i" "$type" "$runtime")
+            xcrun simctl boot "$udid"
+            echo "$udid" >> simulators.txt
+          done
+
+      - *install_maestro
+
+      - name: Tunggu simulator dan install app
+        script: |
+          set -e
+          for udid in $(cat simulators.txt); do
+            xcrun simctl bootstatus "$udid" -b
+            xcrun simctl install "$udid" build/ios/iphonesimulator/Runner.app
+          done
+
+      - *run_maestro
+      - *allure_report
+    artifacts:
+      - allure-report/index.html
+      - maestro-report/junit.xml
+    publishing:
+      <<: *maestro_publishing
