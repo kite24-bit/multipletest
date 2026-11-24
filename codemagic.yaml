@@ -1,6 +1,9 @@
-# Maestro E2E di Codemagic. Ada dua workflow:
-#   - maestro-e2e          : Android, APK release di emulator. Butuh mesin Linux
-#                            (billing aktif, tidak bisa di free plan).
+# Workflow di file ini:
+#   - android-build        : build APK release, lalu memicu Maestro E2E di
+#                            GitHub Actions (.github/workflows/maestro.yml).
+#                            Jalan otomatis saat push ke main; bisa free plan.
+#   - maestro-e2e          : Android, APK release di emulator Codemagic. Butuh
+#                            mesin Linux (billing aktif, tidak bisa free plan).
 #   - maestro-e2e-ios-free : iOS di simulator. Jalan di Mac M2 (bisa free plan).
 # Codemagic tidak punya matrix, jadi semua emulator/simulator jalan di SATU
 # mesin dan flow dibagi oleh Maestro sendiri (--shard-split).
@@ -65,6 +68,54 @@ definitions:
           fi
 
 workflows:
+  android-build:
+    name: Android build + Maestro di GitHub
+    # Build APK tidak butuh emulator, jadi cukup Mac M2 (jatah free plan).
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: 3.38.10
+      java: 17
+      # Group "github" dibuat di Codemagic (Environment variables), berisi
+      # secret GH_DISPATCH_TOKEN: fine-grained token GitHub untuk repo ini
+      # dengan izin "Contents: Read and write" (syarat repository_dispatch).
+      groups:
+        - github
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      # Di project asli: pakai step build + signing yang sudah ada.
+      - name: Build APK release
+        script: flutter build apk --release
+    artifacts:
+      - build/app/outputs/flutter-apk/app-release.apk
+    publishing:
+      scripts:
+        # Publishing jalan setelah artifact di-upload, jadi link APK sudah
+        # ada di CM_ARTIFACT_LINKS. Link itu dikirim ke GitHub Actions
+        # (repository_dispatch); GitHub men-download-nya dengan token API
+        # Codemagic (secret CODEMAGIC_API_TOKEN di GitHub).
+        - name: Picu Maestro E2E di GitHub Actions
+          script: |
+            set -e
+            APK_URL=$(echo "$CM_ARTIFACT_LINKS" | jq -r '[.[] | select(.name | endswith(".apk"))] | first | .url // empty')
+            if [ -z "$APK_URL" ]; then
+              echo "Tidak ada APK (build gagal?), GitHub Actions tidak dipicu."
+              exit 0
+            fi
+            jq -n --arg url "$APK_URL" --arg sha "$CM_COMMIT" --arg branch "$CM_BRANCH" \
+              '{event_type: "codemagic-apk", client_payload: {apk_url: $url, sha: $sha, branch: $branch}}' > dispatch.json
+            curl -fsS -X POST "https://api.github.com/repos/$CM_REPO_SLUG/dispatches" \
+              -H "Authorization: Bearer $GH_DISPATCH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --data @dispatch.json
+            echo "Maestro E2E di GitHub Actions dipicu untuk commit $CM_COMMIT."
+
   maestro-e2e:
     name: Maestro E2E (Android)
     # Emulator Android hanya bisa di Linux (Mac M2/M4 Codemagic tidak bisa).
@@ -77,12 +128,8 @@ workflows:
       java: 17
       vars:
         <<: *maestro_vars
-    triggering:
-      events:
-        - push
-      branch_patterns:
-        - pattern: main
-          include: true
+    # Tanpa `triggering`: E2E Android otomatis sekarang lewat android-build +
+    # GitHub Actions. Workflow ini dijalankan manual (butuh billing aktif).
     scripts:
       # Di project asli: pakai step build + signing yang sudah ada.
       - name: Build APK release

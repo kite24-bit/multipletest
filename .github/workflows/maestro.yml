@@ -1,25 +1,30 @@
 name: Maestro E2E
-run-name: Maestro E2E (${{ github.event.workflow_run.head_branch || github.ref_name }})
+run-name: Maestro E2E (${{ github.event.client_payload.branch || github.ref_name }})
 
-# Syarat jalan: ada push ke branch uat DAN workflow "PR AI Code Review" untuk
-# push itu selesai tanpa error. Jadi workflow ini menunggu review selesai
-# (workflow_run), lalu job `build` mengecek hasilnya.
-# Catatan: trigger workflow_run hanya aktif kalau file ini sudah ada di
+# APK dibuild (release + signing) di Codemagic, lalu Codemagic memicu workflow
+# ini lewat repository_dispatch dengan link APK-nya (lihat workflow
+# `android-build` di codemagic.yaml). Test hanya jalan kalau "PR AI Code
+# Review" untuk commit yang sama lolos tanpa error (dicek di job `prepare`).
+# Catatan: repository_dispatch hanya menjalankan workflow yang ada di
 # default branch (main).
 on:
-  workflow_run:
-    # Harus sama persis dengan `name:` di pr-ai-code-review.yml.
-    workflows: [PR AI Code Review]
-    types: [completed]
-    branches: [main]
+  repository_dispatch:
+    types: [codemagic-apk]
+  # Jalankan manual dengan link artifact APK dari Codemagic.
   workflow_dispatch:
+    inputs:
+      apk_url:
+        description: Link artifact APK dari Codemagic
+        required: true
 
-# workflow_run berjalan dengan hak akses penuh repo; batasi token ke
-# read-only karena workflow ini menjalankan kode dari branch yang direview.
 permissions:
   contents: read
+  # Untuk membaca status workflow "PR AI Code Review".
+  actions: read
 
 env:
+  APK_URL: ${{ github.event.client_payload.apk_url || inputs.apk_url }}
+  COMMIT_SHA: ${{ github.event.client_payload.sha || github.sha }}
   ALLURE_VERSION: 2.46.2
   # Jumlah shard = jumlah emulator/job paralel. Flow dibagi rata ke tiap
   # shard, lalu dijalankan berurutan di emulator shard tersebut. Overhead
@@ -37,45 +42,60 @@ env:
   EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
 
 jobs:
-  # 1. Build APK sekali, dipakai ulang oleh semua job test.
-  #    Sekalian membagi flow ke shard untuk matrix, jadi flow baru di
+  # 1. Cek review, download APK dari Codemagic sekali (dipakai ulang semua
+  #    shard), dan bagi flow ke shard untuk matrix. Flow baru di
   #    .maestro/flows/ otomatis ikut jalan tanpa mengubah workflow ini.
-  build:
-    # Syarat: review dipicu oleh push (bukan PR) dan lolos tanpa error.
-    # Dijalankan manual (workflow_dispatch) selalu boleh.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.conclusion == 'success')
+  prepare:
     runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.shards.outputs.list }}
     steps:
-      # workflow_run defaultnya checkout main; ambil commit yang direview.
+      # Syarat: "PR AI Code Review" untuk push commit ini lolos tanpa error.
+      # Build Codemagic bisa selesai duluan, jadi tunggu review selesai
+      # (maks. 20 menit). Dijalankan manual (workflow_dispatch) selalu boleh.
+      - name: Tunggu PR AI Code Review lolos
+        if: github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 60); do
+            # Nama workflow harus sama persis dengan `name:` di pr-ai-code-review.yml.
+            run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow "PR AI Code Review" --commit "$COMMIT_SHA" --event push --limit 1 --json status,conclusion)
+            status=$(echo "$run" | jq -r '.[0].status // "belum ada"')
+            conclusion=$(echo "$run" | jq -r '.[0].conclusion // ""')
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" = success ]; then exit 0; fi
+              echo "::error::PR AI Code Review untuk $COMMIT_SHA tidak lolos ($conclusion), test tidak dijalankan."
+              exit 1
+            fi
+            echo "PR AI Code Review: $status, tunggu..."
+            sleep 20
+          done
+          echo "::error::PR AI Code Review untuk $COMMIT_SHA tidak selesai dalam 20 menit."
+          exit 1
+
+      # Ambil flow dari commit yang dibuild Codemagic.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.COMMIT_SHA }}
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+      # Link artifact Codemagic butuh token API Codemagic (GitHub Secret
+      # CODEMAGIC_API_TOKEN). Cek isi file supaya error (mis. token salah)
+      # tidak lolos sebagai "APK".
+      - name: Download APK dari Codemagic
+        env:
+          CODEMAGIC_API_TOKEN: ${{ secrets.CODEMAGIC_API_TOKEN }}
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors -H "x-auth-token: $CODEMAGIC_API_TOKEN" -o app-release.apk "$APK_URL"
+          unzip -l app-release.apk AndroidManifest.xml > /dev/null || { echo "::error::File yang didownload bukan APK."; exit 1; }
+          ls -lh app-release.apk
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.38.10
-          channel: stable
-          cache: true
-
-      # Release: lebih kecil (~42 MB vs ~157 MB debug) dan jauh lebih cepat
-      # di emulator. Maestro black-box, jadi tidak butuh build debug.
-      # APK release tetap berisi x86_64, jadi bisa jalan di emulator CI.
-      - run: flutter build apk --release
-
+      # Hanya dipakai di run ini, jadi simpan 1 hari saja (hemat kuota artifact).
       - uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: app-release.apk
+          retention-days: 1
 
       # Bagi flow ke shard secara round-robin, contoh SHARDS=2 dengan 3 flow:
       # [{"name":"shard-1","flows":"01.yaml 03.yaml"},{"name":"shard-2","flows":"02.yaml"}]
@@ -87,18 +107,18 @@ jobs:
   # 2. Satu job per shard, semuanya jalan paralel, masing-masing dengan
   #    emulator headless sendiri. Flow di dalam shard jalan berurutan.
   maestro:
-    needs: build
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJson(needs.build.outputs.shards) }}
+        shard: ${{ fromJson(needs.prepare.outputs.shards) }}
     name: maestro (${{ matrix.shard.name }})
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.COMMIT_SHA }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -231,7 +251,7 @@ jobs:
   # 3. Gabungkan hasil SEMUA flow jadi SATU laporan Allure.
   allure-report:
     needs: maestro
-    # Lewati juga kalau test tidak jalan (review gagal -> build di-skip).
+    # Lewati juga kalau test tidak jalan (review gagal -> prepare gagal).
     if: ${{ !cancelled() && needs.maestro.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
